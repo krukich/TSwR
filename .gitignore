@@ -1,0 +1,6 @@
+.venv/
+.idea/
+__pycache__/
+*.pyc
+mujoco_menagerie/
+MUJOCO_LOG.TXT
