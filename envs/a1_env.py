@@ -57,6 +57,37 @@ class A1Env:
         self.previous_action = np.zeros(self.model.nu, dtype=float)
         self.step_count = 0
 
+        self.foot_order = ["FR", "FL", "RR", "RL"]
+
+        self.floor_geom_id = 0
+        self.foot_geom_ids = {
+            "FR": {18, 19},
+            "FL": {29, 30},
+            "RR": {39, 40},
+            "RL": {49, 50},
+        }
+
+        self.foot_geom_ids_ordered = []
+        self.geom_id_to_name = {}
+
+    def get_foot_contacts(self):
+        contacts = np.zeros(4, dtype=np.float32)
+
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            g1, g2 = c.geom1, c.geom2
+
+            for idx, leg in enumerate(self.foot_order):
+                foot_geoms = self.foot_geom_ids[leg]
+
+                if (
+                        (g1 == self.floor_geom_id and g2 in foot_geoms) or
+                        (g2 == self.floor_geom_id and g1 in foot_geoms)
+                ):
+                    contacts[idx] = 1.0
+
+        return contacts
+
     def launch_viewer(self):
         if self.render_enabled and self.viewer is None:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
@@ -87,8 +118,12 @@ class A1Env:
         base_lin_vel = self.data.qvel[0:3].copy()
         base_ang_vel = self.data.qvel[3:6].copy()
 
+        roll, pitch = self._quat_to_euler(base_quat)
+
         joint_pos = []
         joint_vel = []
+
+        foot_contacts = self.get_foot_contacts()
 
         for jid in self.joint_ids:
             qpos_adr = self.model.jnt_qposadr[jid]
@@ -99,24 +134,25 @@ class A1Env:
         return {
             "base_pos": base_pos,
             "base_quat": base_quat,
+            "roll_pitch": np.array([roll, pitch], dtype=np.float32),
             "base_lin_vel": base_lin_vel,
             "base_ang_vel": base_ang_vel,
             "joint_pos": np.array(joint_pos, dtype=float),
             "joint_vel": np.array(joint_vel, dtype=float),
             "previous_action": self.previous_action.copy(),
+            "foot_contacts": foot_contacts,
         }
 
     def get_obs_vector(self):
         obs = self.get_observation()
-        return np.concatenate([
-            obs["base_pos"],
-            obs["base_quat"],
-            obs["base_lin_vel"],
-            obs["base_ang_vel"],
-            obs["joint_pos"],
-            obs["joint_vel"],
-            obs["previous_action"],
-        ])
+        x_t = np.concatenate([
+            obs["joint_pos"],  # 12
+            obs["joint_vel"],  # 12
+            obs["roll_pitch"],  # 2
+            obs["foot_contacts"],  # 4
+        ]).astype(np.float32)
+
+        return x_t
 
     def _quat_to_euler(self, quat):
         qw, qx, qy, qz = quat
