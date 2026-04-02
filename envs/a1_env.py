@@ -21,10 +21,10 @@ class A1Env:
     ], dtype=float)
 
     ACTION_SCALE = np.array([
-        0.2, 0.4, 0.4,
-        0.2, 0.4, 0.4,
-        0.2, 0.4, 0.4,
-        0.2, 0.4, 0.4,
+        0.2, 0.65, 0.4,
+        0.2, 0.65, 0.4,
+        0.2, 0.65, 0.4,
+        0.2, 0.65, 0.4,
     ], dtype=float)
 
     def __init__(
@@ -67,8 +67,6 @@ class A1Env:
             "RL": {49, 50},
         }
 
-        self.foot_geom_ids_ordered = []
-        self.geom_id_to_name = {}
 
     def get_foot_contacts(self):
         contacts = np.zeros(4, dtype=np.float32)
@@ -113,10 +111,10 @@ class A1Env:
         return self.get_observation()
 
     def get_observation(self):
-        base_pos = self.data.qpos[0:3].copy()
-        base_quat = self.data.qpos[3:7].copy()
-        base_lin_vel = self.data.qvel[0:3].copy()
-        base_ang_vel = self.data.qvel[3:6].copy()
+        base_pos = self.data.qpos[0:3].copy().astype(np.float32)
+        base_quat = self.data.qpos[3:7].copy().astype(np.float32)
+        base_lin_vel = self.data.qvel[0:3].copy().astype(np.float32)
+        base_ang_vel = self.data.qvel[3:6].copy().astype(np.float32)
 
         roll, pitch = self._quat_to_euler(base_quat)
 
@@ -137,9 +135,9 @@ class A1Env:
             "roll_pitch": np.array([roll, pitch], dtype=np.float32),
             "base_lin_vel": base_lin_vel,
             "base_ang_vel": base_ang_vel,
-            "joint_pos": np.array(joint_pos, dtype=float),
-            "joint_vel": np.array(joint_vel, dtype=float),
-            "previous_action": self.previous_action.copy(),
+            "joint_pos": np.array(joint_pos, dtype=np.float32),
+            "joint_vel": np.array(joint_vel, dtype=np.float32),
+            "previous_action": self.previous_action.copy().astype(np.float32),
             "foot_contacts": foot_contacts,
         }
 

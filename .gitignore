@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 mujoco_menagerie/
 MUJOCO_LOG.TXT
+manual_sinus_gait.py
+
