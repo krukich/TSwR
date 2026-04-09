@@ -2,9 +2,11 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-
 class A1Env:
     MODEL_PATH = "mujoco_menagerie/unitree_a1/scene.xml"
+    OBS_VECTOR_DIM = 36
+    AGENT_INPUT_DIM = 48
+    TERMINAL_PENALTY = -50.0
 
     JOINT_NAMES = [
         "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
@@ -21,10 +23,10 @@ class A1Env:
     ], dtype=float)
 
     ACTION_SCALE = np.array([
-        0.2, 0.65, 0.4,
-        0.2, 0.65, 0.4,
-        0.2, 0.65, 0.4,
-        0.2, 0.65, 0.4,
+        0.15, 0.35, 0.20,
+        0.15, 0.35, 0.20,
+        0.15, 0.35, 0.20,
+        0.15, 0.35, 0.20,
     ], dtype=float)
 
     def __init__(
@@ -33,7 +35,8 @@ class A1Env:
         roll_th: float = 0.7,
         pitch_th: float = 0.7,
         z_min: float = 0.15,
-        max_steps: int = 2000,
+        max_physics_steps: int = 2000,
+        control_decimation: int = 8,
     ):
         self.model = mujoco.MjModel.from_xml_path(self.MODEL_PATH)
         self.data = mujoco.MjData(self.model)
@@ -41,21 +44,28 @@ class A1Env:
         self.render_enabled = render
         self.viewer = None
 
+        if control_decimation < 1:
+            raise ValueError("control_decimation must be >= 1.")
+
+        self.control_decimation = int(control_decimation)
+        self.physics_timestep = float(self.model.opt.timestep)
+        self.control_timestep = self.physics_timestep * self.control_decimation
+        self.reset_settle_steps = 100
+
         self.roll_th = roll_th
         self.pitch_th = pitch_th
         self.z_min = z_min
-        self.max_steps = max_steps
+        self.max_physics_steps = max_physics_steps
 
         self.joint_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             for name in self.JOINT_NAMES
         ]
 
-        self.initial_qpos = self.data.qpos.copy()
-        self.initial_qvel = self.data.qvel.copy()
-
         self.previous_action = np.zeros(self.model.nu, dtype=float)
         self.step_count = 0
+        self.physics_step_count = 0
+        self.np_random = np.random.default_rng()
 
         self.foot_order = ["FR", "FL", "RR", "RL"]
 
@@ -96,19 +106,40 @@ class A1Env:
             self.viewer.close()
             self.viewer = None
 
-    def reset(self):
-        self.data.qpos[:] = self.initial_qpos
-        self.data.qvel[:] = self.initial_qvel
-        self.data.ctrl[:] = self.DEFAULT_POSE
+    def render(self):
+        viewer = self.launch_viewer()
+        if viewer is not None:
+            viewer.sync()
+        return viewer
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
+        mujoco.mj_resetData(self.model, self.data)
+
+        home_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(self.model, self.data, home_id)
+
         self.previous_action[:] = 0.0
         self.step_count = 0
+        self.physics_step_count = 0
+
+        self.data.ctrl[:] = self.DEFAULT_POSE
 
         mujoco.mj_forward(self.model, self.data)
 
-        if self.render_enabled and self.viewer is None:
-            self.launch_viewer()
+        for _ in range(self.reset_settle_steps):
+            mujoco.mj_step(self.model, self.data)
 
-        return self.get_observation()
+        obs_dict = self.get_observation()
+        obs = self.get_agent_input_from_obs(obs_dict)
+        info = self._build_info(
+            terminated=False,
+            truncated=False,
+            termination_reason=None,
+            truncation_reason=None,
+        )
+        return obs, info
 
     def get_observation(self):
         base_pos = self.data.qpos[0:3].copy().astype(np.float32)
@@ -141,16 +172,30 @@ class A1Env:
             "foot_contacts": foot_contacts,
         }
 
-    def get_obs_vector(self):
-        obs = self.get_observation()
+    def get_obs_vector_from_obs(self, obs):
         x_t = np.concatenate([
-            obs["joint_pos"],  # 12
-            obs["joint_vel"],  # 12
-            obs["roll_pitch"],  # 2
-            obs["foot_contacts"],  # 4
+            obs["joint_pos"],
+            obs["joint_vel"],
+            obs["roll_pitch"],
+            obs["base_lin_vel"],
+            obs["base_ang_vel"],
+            obs["foot_contacts"],
         ]).astype(np.float32)
 
+        assert x_t.shape == (self.OBS_VECTOR_DIM,)
         return x_t
+
+    def get_obs_vector(self):
+        obs = self.get_observation()
+        return self.get_obs_vector_from_obs(obs)
+
+    def get_agent_input_from_obs(self, obs):
+        x_t = self.get_obs_vector_from_obs(obs)
+        a_prev = obs["previous_action"]
+
+        agent_input = np.concatenate([x_t, a_prev]).astype(np.float32)
+        assert agent_input.shape == (self.AGENT_INPUT_DIM,)
+        return agent_input
 
     def _quat_to_euler(self, quat):
         qw, qx, qy, qz = quat
@@ -165,60 +210,164 @@ class A1Env:
 
         return roll, pitch
 
-    def is_healthy(self, obs):
-        z = obs["base_pos"][2]
-        roll, pitch = self._quat_to_euler(obs["base_quat"])
+    def _check_terminated(self, obs):
+        base_z = obs["base_pos"][2]
+        roll, pitch = obs["roll_pitch"]
 
         if abs(roll) > self.roll_th:
-            return False
+            return True, "roll"
         if abs(pitch) > self.pitch_th:
-            return False
-        if z < self.z_min:
-            return False
-        if self.step_count >= self.max_steps:
-            return False
+            return True, "pitch"
+        if base_z < self.z_min:
+            return True, "base_z"
 
-        return True
+        return False, None
 
-    def _compute_reward(self, obs_before, obs_after):
-        forward_vel = obs_after["base_lin_vel"][0]
-        reward = forward_vel
-        return float(reward)
+    def _check_truncated(self):
+        if self.physics_step_count >= self.max_physics_steps:
+            return True, "max_physics_steps"
+        return False, None
+
+    def is_healthy(self, obs):
+        terminated, _ = self._check_terminated(obs)
+        return not terminated
+
+    def _compute_reward(self, obs_after, action, smoothness_penalty=0.0):
+        vx = obs_after["base_lin_vel"][0]
+        roll, pitch = obs_after["roll_pitch"]
+        base_ang_vel = obs_after["base_ang_vel"]
+        joint_vel = obs_after["joint_vel"]
+        posture_error = roll ** 2 + pitch ** 2
+        posture_scale = np.exp(-4.0 * posture_error)
+
+        r_forward = 2.0 * max(vx, 0.0) * posture_scale
+        r_posture = -1.0 * posture_error
+        r_base_ang_vel = -0.05 * np.sum(base_ang_vel[:2] ** 2)
+        r_action = -0.002 * np.sum(action ** 2)
+        r_smooth = float(smoothness_penalty)
+        r_joint_vel = -0.0005 * np.sum(joint_vel ** 2)
+
+        reward = r_forward + r_posture + r_base_ang_vel + r_action + r_smooth + r_joint_vel
+
+        reward_terms = {
+            "r_forward": float(r_forward),
+            "r_posture": float(r_posture),
+            "r_base_ang_vel": float(r_base_ang_vel),
+            "r_action": float(r_action),
+            "r_smooth": float(r_smooth),
+            "r_joint_vel": float(r_joint_vel),
+            "reward_total_pre_terminal": float(reward),
+        }
+
+        return float(reward), reward_terms
+
+    def _build_info(
+        self,
+        *,
+        terminated,
+        truncated,
+        termination_reason,
+        truncation_reason,
+        reward_terms=None,
+    ):
+        info = {
+            "step_count": self.step_count,
+            "physics_step_count": self.physics_step_count,
+            "episode_time": self.physics_step_count * self.physics_timestep,
+            "terminated": terminated,
+            "truncated": truncated,
+            "termination_reason": termination_reason,
+            "truncation_reason": truncation_reason,
+        }
+
+        if reward_terms is not None:
+            info.update(reward_terms)
+
+        return info
 
     def step(self, action):
-        action = np.asarray(action, dtype=float)
+        action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, -1.0, 1.0)
+        prev_action = self.previous_action.copy()
+        smoothness_penalty = -0.01 * np.sum((action - prev_action) ** 2)
 
         ctrl = self.DEFAULT_POSE + self.ACTION_SCALE * action
         self.data.ctrl[:] = ctrl
 
-        obs_before = self.get_observation()
+        reward = 0.0
+        reward_terms = {
+            "r_forward": 0.0,
+            "r_posture": 0.0,
+            "r_base_ang_vel": 0.0,
+            "r_action": 0.0,
+            "r_smooth": 0.0,
+            "r_joint_vel": 0.0,
+            "reward_total_pre_terminal": 0.0,
+        }
+        obs_after = None
+        terminated = False
+        termination_reason = None
+        truncated = False
+        truncation_reason = None
 
-        mujoco.mj_step(self.model, self.data)
+        for substep_idx in range(self.control_decimation):
+            mujoco.mj_step(self.model, self.data)
+            self.physics_step_count += 1
+
+            obs_after = self.get_observation()
+            # Smoothness is defined per policy action change, not per physics substep.
+            substep_smoothness_penalty = smoothness_penalty if substep_idx == 0 else 0.0
+            substep_reward, substep_terms = self._compute_reward(
+                obs_after, action, substep_smoothness_penalty
+            )
+            reward += substep_reward
+
+            for key, value in substep_terms.items():
+                reward_terms[key] += value
+
+            terminated, termination_reason = self._check_terminated(obs_after)
+            truncated, truncation_reason = self._check_truncated()
+
+            if terminated or truncated:
+                break
 
         if self.viewer is not None:
             self.viewer.sync()
 
         self.step_count += 1
-
-        obs_after = self.get_observation()
-        reward = self._compute_reward(obs_before, obs_after)
-        done = not self.is_healthy(obs_after)
-
         self.previous_action = action.copy()
+        obs_after = self.get_observation()
+        obs = self.get_agent_input_from_obs(obs_after)
 
-        info = {
-            "step_count": self.step_count,
-        }
+        terminal_penalty = self.TERMINAL_PENALTY if terminated else 0.0
+        reward += terminal_penalty
+        reward_terms["terminal_penalty"] = float(terminal_penalty)
+        reward_terms["reward_total_with_terminal"] = float(reward)
 
-        return obs_after, reward, done, info
+        info = self._build_info(
+            terminated=terminated,
+            truncated=truncated,
+            termination_reason=termination_reason,
+            truncation_reason=truncation_reason,
+            reward_terms=reward_terms,
+        )
+
+        return obs, reward, terminated, truncated, info
 
     def stand(self):
         self.data.ctrl[:] = self.DEFAULT_POSE
-        mujoco.mj_step(self.model, self.data)
+
+        for _ in range(self.control_decimation):
+            mujoco.mj_step(self.model, self.data)
+            self.physics_step_count += 1
 
         if self.viewer is not None:
             self.viewer.sync()
 
         self.step_count += 1
+        self.previous_action[:] = 0.0
         return self.get_observation()
+
+    def get_agent_input(self):
+        obs = self.get_observation()
+        return self.get_agent_input_from_obs(obs)
