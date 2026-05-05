@@ -82,7 +82,7 @@ launch-testing-ros==0.19.13
 launch-xml==1.0.14
 launch-yaml==1.0.14
 lazy-loader==0.5
-libigl==2.5.0
+libigl==2.5.1
 lifecycle-msgs==1.2.2
 llvmlite==0.47.0
 logging-demo==0.20.9
