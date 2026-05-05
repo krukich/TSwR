@@ -3,9 +3,7 @@
 __pycache__/
 *.pyc
 mujoco_menagerie/
-MUJOCO_LOG.TXT
-manual_sinus_gait.py
-train.py
-check_action_scale.py
-play.py
-runs/
+
+unitree_ros/
+scripts/
+logs/
