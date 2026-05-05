@@ -100,13 +100,9 @@ def get_cfgs():
         "kp": 20.0,
         "kd": 0.5,
 
-        # Not in original Argo config, but safe for Go2.
-        # If you want absolute original, delete these two lines.
         "force_low": -45.0,
         "force_high": 45.0,
 
-        # Argo uses 10 here. They comment "degree", but compare directly
-        # against euler from Genesis. Keep it exactly soft like Argo.
         "termination_if_roll_greater_than": 10,
         "termination_if_pitch_greater_than": 10,
 
@@ -155,7 +151,6 @@ def get_cfgs():
     command_cfg = {
         "num_commands": 5,
 
-        # [lin_vel_x, lin_vel_y, ang_vel_yaw, height, jump]
         "lin_vel_x_range": [-1.0, 2.0],
         "lin_vel_y_range": [-0.5, 0.5],
         "ang_vel_range": [-0.6, 0.6],

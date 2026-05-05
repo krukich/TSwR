@@ -35,7 +35,6 @@ def main():
         open(f"{log_dir}/cfgs.pkl", "rb")
     )
 
-    # Same as Argo eval: no rewards, very soft termination.
     reward_cfg["reward_scales"] = {}
     env_cfg["termination_if_roll_greater_than"] = 50
     env_cfg["termination_if_pitch_greater_than"] = 50

@@ -38,7 +38,6 @@ class Go2Env:
 
         self.simulate_action_latency = env_cfg["simulate_action_latency"]
 
-        # Argo: 50 Hz control.
         self.dt = 0.02
         self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.dt)
 
@@ -49,7 +48,6 @@ class Go2Env:
 
         self.obs_scales = obs_cfg["obs_scales"]
 
-        # Copy because we multiply by dt.
         self.reward_scales = dict(reward_cfg["reward_scales"])
 
         self.scene = gs.Scene(
@@ -77,8 +75,6 @@ class Go2Env:
             show_FPS=False,
         )
 
-        # Argo uses urdf/plane/plane.urdf.
-        # This fallback avoids crashing if you didn't copy their plane URDF.
         plane_path = env_cfg.get("plane_path", "urdf/plane/plane.urdf")
         if os.path.exists(plane_path):
             self.scene.add_entity(gs.morphs.URDF(file=plane_path, fixed=True))
@@ -153,7 +149,6 @@ class Go2Env:
                 self.motor_dofs,
             )
 
-        # Reward functions and episode sums.
         self.reward_functions = {}
         self.episode_sums = {}
 
@@ -166,7 +161,6 @@ class Go2Env:
                 dtype=gs.tc_float,
             )
 
-        # Buffers.
         self.base_lin_vel = torch.zeros(
             (self.num_envs, 3),
             device=self.device,
@@ -278,10 +272,6 @@ class Go2Env:
 
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Commands
-    # ------------------------------------------------------------------
-
     def _sample_commands(self, envs_idx):
         if len(envs_idx) == 0:
             return
@@ -309,7 +299,6 @@ class Go2Env:
 
         self.commands[envs_idx, 4] = 0.0
 
-        # Argo scales velocity commands depending on height command.
         denom = self.command_cfg["height_range"][1] - self.reward_cfg["base_height_target"]
         denom = max(float(denom), 1.0e-6)
 
@@ -334,10 +323,6 @@ class Go2Env:
             self.device,
         )
 
-    # ------------------------------------------------------------------
-    # rsl_rl API
-    # ------------------------------------------------------------------
-
     def get_observations(self):
         return self.obs_buf
 
@@ -348,8 +333,6 @@ class Go2Env:
         self.reset_buf[:] = True
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
 
-        # Original Argo returns obs_buf immediately. I compute one step of obs
-        # so rsl_rl starts with valid non-zero observation.
         self._update_state()
         self._compute_observations()
 
@@ -406,7 +389,6 @@ class Go2Env:
 
         self._sample_commands(envs_idx)
 
-        # Argo sets target height command to default height after reset.
         self.commands[envs_idx, 3] = self.reward_cfg["base_height_target"]
 
     def step(self, actions, is_train=True):
@@ -434,7 +416,6 @@ class Go2Env:
 
         self._update_state()
 
-        # Resample commands every resampling_time_s.
         envs_idx = (
             (
                 self.episode_length_buf
@@ -448,13 +429,11 @@ class Go2Env:
         if is_train:
             self._sample_commands(envs_idx)
 
-            # Argo: 5% random commands each step.
             random_idxs_1 = torch.randperm(self.num_envs, device=self.device)[
                 : int(self.num_envs * 0.05)
             ]
             self._sample_commands(random_idxs_1)
 
-        # Jump state update.
         jump_cmd_now = (self.commands[:, 4] > 0.0).float()
 
         toggle_mask = (
@@ -474,7 +453,6 @@ class Go2Env:
             self.jump_target_height,
         )
 
-        # Termination.
         self.reset_buf = self.episode_length_buf > self.max_episode_length
         self.reset_buf |= (
             torch.abs(self.base_euler[:, 1])
@@ -500,7 +478,6 @@ class Go2Env:
             self.reset_buf.nonzero(as_tuple=False).flatten()
         )
 
-        # Reward.
         self.rew_buf[:] = 0.0
 
         for name, reward_func in self.reward_functions.items():
@@ -513,14 +490,9 @@ class Go2Env:
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
 
-        # Argo resets jump command after step.
         self.commands[:, 4] = 0.0
 
         return self.obs_buf, None, self.rew_buf, self.reset_buf, self.extras
-
-    # ------------------------------------------------------------------
-    # State / obs
-    # ------------------------------------------------------------------
 
     def _update_state(self):
         self.base_pos[:] = self.robot.get_pos()
@@ -574,9 +546,6 @@ class Go2Env:
             self.obs_cfg.get("clip_observations", 100.0),
         )
 
-    # ------------------------------------------------------------------
-    # Rewards
-    # ------------------------------------------------------------------
 
     def _reward_tracking_lin_vel(self):
         lin_vel_error = torch.sum(
