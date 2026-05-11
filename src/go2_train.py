@@ -14,7 +14,7 @@ def get_train_cfg(exp_name, max_iterations):
         "algorithm": {
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.01,
+            "entropy_coef": 0.01, #0.01
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.001,
@@ -56,6 +56,10 @@ def get_train_cfg(exp_name, max_iterations):
 
 
 def get_cfgs():
+    base_num_obs = 48
+    privileged_raw_dim = 5
+    privileged_encoder_dim = 6
+
     env_cfg = {
         "asset_path": "urdf/go2/urdf/go2.urdf",
         "plane_path": "urdf/plane/plane.urdf",
@@ -109,18 +113,35 @@ def get_cfgs():
         "base_init_pos": [0.0, 0.0, 0.42],
         "base_init_quat": [1.0, 0.0, 0.0, 0.0],
 
+        "ground_friction_range": [0.1, 1.0],
+
+        "payload_link_name": "base_link",
+        "payload_mass_range": [0.0, 2.0],
+        "payload_pos_x_range": [-0.02, 0.02],
+        "payload_pos_y_range": [-0.02, 0.02],
+        "payload_pos_z_range": [0.03, 0.08],
+        "payload_mass_encode_range": [0.0, 2.0],
+        "payload_pos_x_encode_range": [-0.02, 0.02],
+        "payload_pos_y_encode_range": [-0.02, 0.02],
+        "payload_pos_z_encode_range": [0.03, 0.08],
+
         "episode_length_s": 20.0,
         "resampling_time_s": 4.0,
 
         "action_scale": 0.25,
         "simulate_action_latency": True,
+        "use_last_actions_in_obs": True,
         "clip_actions": 100.0,
 
         "n_rendered_envs": 1,
     }
 
     obs_cfg = {
-        "num_obs": 48,
+        "base_num_obs": base_num_obs,
+        "privileged_raw_dim": privileged_raw_dim,
+        "privileged_encoder_dim": privileged_encoder_dim,
+        "num_obs": base_num_obs + privileged_encoder_dim,
+        "num_privileged_obs": base_num_obs + privileged_encoder_dim + privileged_raw_dim,
         "clip_observations": 100.0,
         "obs_scales": {
             "lin_vel": 2.0,
@@ -159,6 +180,8 @@ def get_cfgs():
         "jump_range": [0.0, 0.0],
     }
 
+
+
     return env_cfg, obs_cfg, reward_cfg, command_cfg
 
 
@@ -175,6 +198,8 @@ def main():
         help="device to use: 'cpu' or 'cuda:0'",
     )
     parser.add_argument("--show_viewer", action="store_true")
+    parser.add_argument("--resume_path", type=str, default=None)
+    parser.add_argument("--weights_only", action="store_true")
 
     args = parser.parse_args()
 
@@ -211,6 +236,15 @@ def main():
         log_dir,
         device=args.device,
     )
+
+    if args.resume_path is not None:
+        print(f"[train] Loading checkpoint: {args.resume_path}")
+        print(f"[train] weights_only = {args.weights_only}")
+
+        runner.load(
+            args.resume_path,
+            load_optimizer=not args.weights_only,
+        )
 
     pickle.dump(
         [env_cfg, obs_cfg, reward_cfg, command_cfg, train_cfg],
