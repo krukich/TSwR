@@ -16,8 +16,7 @@ def parse_float_list(text: str):
         item = item.strip()
         if not item:
             continue
-        value = float(item)
-        values.append(value)
+        values.append(float(item))
     return values
 
 
@@ -27,11 +26,85 @@ def parse_friction_list(text: str):
         item = item.strip()
         if not item:
             continue
+
         value = float(item)
-        value = max(value, 1.0e-2)
-        value = min(value, 5.0)
+
+        # Same range as teacher training.
+        value = max(value, 0.1)
+        value = min(value, 1.0)
+
         values.append(value)
+
     return values
+
+
+def info_bool(infos, key):
+    if key not in infos:
+        return False
+
+    value = infos[key]
+
+    if torch.is_tensor(value):
+        return bool(value[0].item())
+
+    return bool(value)
+
+
+def info_float(infos, key, default=0.0):
+    if key not in infos:
+        return default
+
+    value = infos[key]
+
+    if torch.is_tensor(value):
+        return float(value[0].item())
+
+    return float(value)
+
+
+def decode_reset_reason(infos):
+    timeout = info_bool(infos, "reset_timeout")
+    roll = info_bool(infos, "reset_roll")
+    pitch = info_bool(infos, "reset_pitch")
+
+    if timeout and (roll or pitch):
+        return "timeout+tilt"
+    if roll and pitch:
+        return "roll+pitch"
+    if roll:
+        return "roll"
+    if pitch:
+        return "pitch"
+    if timeout:
+        return "timeout"
+
+    return "unknown"
+
+
+def make_reasons_text(reset_reasons):
+    parts = []
+
+    for name in ["roll", "pitch", "roll+pitch", "timeout", "timeout+tilt", "unknown"]:
+        count = reset_reasons.get(name, 0)
+        if count > 0:
+            parts.append(f"{name}:{count}")
+
+    if not parts:
+        return "-"
+
+    return ",".join(parts)
+
+
+def set_eval_command(env, vx, vy, yaw_rate, height):
+    env.commands[:, 0] = vx
+    env.commands[:, 1] = vy
+    env.commands[:, 2] = yaw_rate
+    env.commands[:, 3] = height
+    env.commands[:, 4] = 0.0
+
+    env._compute_observations()
+
+    return env.obs_buf
 
 
 def run_one_friction(
@@ -60,16 +133,18 @@ def run_one_friction(
     local_env_cfg = dict(env_cfg)
     local_reward_cfg = dict(reward_cfg)
 
+    # During eval we do not need reward terms, only policy execution and reset logic.
     local_reward_cfg["reward_scales"] = {}
 
-    local_env_cfg["termination_if_roll_greater_than"] = 50
-    local_env_cfg["termination_if_pitch_greater_than"] = 50
-
     local_env_cfg["ground_friction"] = float(friction)
+    local_env_cfg["debug_reset_reasons"] = True
+
     local_env_cfg["payload_mass_range"] = [float(payload_mass), float(payload_mass)]
-    local_env_cfg["payload_pos_x_range"] = [float(payload_pos_x), float(payload_pos_x)]
-    local_env_cfg["payload_pos_y_range"] = [float(payload_pos_y), float(payload_pos_y)]
-    local_env_cfg["payload_pos_z_range"] = [float(payload_pos_z), float(payload_pos_z)]
+    local_env_cfg["payload_pos"] = [
+        float(payload_pos_x),
+        float(payload_pos_y),
+        float(payload_pos_z),
+    ]
 
     env = Go2Env(
         num_envs=1,
@@ -98,13 +173,7 @@ def run_one_friction(
 
     obs, _ = env.reset()
 
-    env.commands[:, 0] = vx
-    env.commands[:, 1] = vy
-    env.commands[:, 2] = yaw_rate
-    env.commands[:, 3] = height
-    env.commands[:, 4] = 0.0
-    env._compute_observations()
-    obs = env.obs_buf
+    obs = set_eval_command(env, vx, vy, yaw_rate, height)
 
     x_start = float(env.base_pos[0, 0].item())
     y_start = float(env.base_pos[0, 1].item())
@@ -119,52 +188,98 @@ def run_one_friction(
     episode_len_sum = 0
     current_ep_len = 0
 
+    reset_reasons = {
+        "roll": 0,
+        "pitch": 0,
+        "roll+pitch": 0,
+        "timeout": 0,
+        "timeout+tilt": 0,
+        "unknown": 0,
+    }
+
+    first_reset = None
+
     max_abs_y = 0.0
     final_x = x_start
     final_y = y_start
 
     with torch.no_grad():
         for step_i in range(steps):
+            obs = set_eval_command(env, vx, vy, yaw_rate, height)
+
             actions = policy(obs)
 
             obs, _, rewards, dones, infos = env.step(actions, is_train=False)
-
-            env.commands[:, 0] = vx
-            env.commands[:, 1] = vy
-            env.commands[:, 2] = yaw_rate
-            env.commands[:, 3] = height
-            env.commands[:, 4] = 0.0
-            env._compute_observations()
-            obs = env.obs_buf
+            done = bool(dones[0].item())
 
             current_ep_len += 1
 
-            x = float(env.base_pos[0, 0].item())
-            y = float(env.base_pos[0, 1].item())
-            z = float(env.base_pos[0, 2].item())
+            if done:
+                reason = decode_reset_reason(infos)
+                reset_reasons[reason] = reset_reasons.get(reason, 0) + 1
 
-            final_x = x
-            final_y = y
-            max_abs_y = max(max_abs_y, abs(y - y_start))
+                terminal_roll = info_float(infos, "terminal_roll")
+                terminal_pitch = info_float(infos, "terminal_pitch")
+                terminal_z = info_float(infos, "terminal_z")
+                terminal_yaw_accum = info_float(infos, "terminal_yaw_accum")
+                terminal_lateral_error = info_float(infos, "terminal_lateral_error")
 
-            if step_i >= warmup_steps:
-                vx_sum += float(env.base_lin_vel[0, 0].item())
-                vy_sum += float(env.base_lin_vel[0, 1].item())
-                z_sum += z
-                action_sum += float(torch.mean(torch.abs(actions[0])).item())
-                n += 1
+                terminal_vx_world = info_float(infos, "terminal_vx_world")
+                terminal_vy_world = info_float(infos, "terminal_vy_world")
+                terminal_vx_body = info_float(infos, "terminal_vx_body")
+                terminal_vy_body = info_float(infos, "terminal_vy_body")
 
-            if bool(dones[0].item()):
+                if first_reset is None:
+                    first_reset = {
+                        "step": step_i + 1,
+                        "episode_len": current_ep_len,
+                        "reason": reason,
+                        "roll": terminal_roll,
+                        "pitch": terminal_pitch,
+                        "z": terminal_z,
+                        "yaw_accum": terminal_yaw_accum,
+                        "lateral_error": terminal_lateral_error,
+                        "vx_world": terminal_vx_world,
+                        "vy_world": terminal_vy_world,
+                        "vx_body": terminal_vx_body,
+                        "vy_body": terminal_vy_body,
+                    }
+
+                if step_i >= warmup_steps:
+                    vx_sum += terminal_vx_world
+                    vy_sum += terminal_vy_world
+                    z_sum += terminal_z
+                    action_sum += float(torch.mean(torch.abs(actions[0])).item())
+                    n += 1
+
                 falls += 1
                 episode_len_sum += current_ep_len
                 current_ep_len = 0
 
-                # Новый старт после reset.
+                # After env.step(), done env is already reset.
                 x_start = float(env.base_pos[0, 0].item())
                 y_start = float(env.base_pos[0, 1].item())
                 final_x = x_start
                 final_y = y_start
                 max_abs_y = 0.0
+
+            else:
+                x = float(env.base_pos[0, 0].item())
+                y = float(env.base_pos[0, 1].item())
+                z = float(env.base_pos[0, 2].item())
+
+                final_x = x
+                final_y = y
+                max_abs_y = max(max_abs_y, abs(y - y_start))
+
+                if step_i >= warmup_steps:
+                    vx_sum += float(env.base_lin_vel_world[0, 0].item())
+                    vy_sum += float(env.base_lin_vel_world[0, 1].item())
+                    z_sum += z
+                    action_sum += float(torch.mean(torch.abs(actions[0])).item())
+                    n += 1
+
+            obs = env.obs_buf
 
             if render and sleep > 0.0:
                 time.sleep(sleep)
@@ -197,6 +312,8 @@ def run_one_friction(
         "max_abs_y": max_abs_y,
         "falls": falls,
         "avg_episode_len": avg_episode_len,
+        "reset_reasons": reset_reasons,
+        "first_reset": first_reset,
     }
 
 
@@ -226,7 +343,11 @@ def main():
 
     args = parser.parse_args()
 
-    backend = gs.constants.backend.gpu if args.device == "cuda:0" else gs.constants.backend.cpu
+    backend = (
+        gs.constants.backend.gpu
+        if args.device == "cuda:0"
+        else gs.constants.backend.cpu
+    )
     gs.init(backend=backend, logging_level="warning")
 
     log_dir = os.path.join("logs", args.exp_name)
@@ -245,28 +366,34 @@ def main():
     print("Go2 friction eval")
     print(f"Experiment: {args.exp_name}")
     print(f"Checkpoint: model_{args.ckpt}.pt")
-    print(f"Command: vx={args.vx}, vy={args.vy}, yaw_rate={args.yaw_rate}, height={args.height}")
+    print(
+        f"Command: vx={args.vx}, vy={args.vy}, "
+        f"yaw_rate={args.yaw_rate}, height={args.height}"
+    )
     print(f"Frictions: {friction_values}")
     print(f"Payload masses: {payload_masses}")
     print(
         "Payload position: "
-        f"x={args.payload_pos_x}, y={args.payload_pos_y}, z={args.payload_pos_z}"
+        f"x={args.payload_pos_x}, "
+        f"y={args.payload_pos_y}, "
+        f"z={args.payload_pos_z}"
     )
     print("============================================================")
     print(
         f"{'payload':>8s} | "
         f"{'friction':>8s} | "
-        f"{'avg_vx':>8s} | "
-        f"{'avg_vy':>8s} | "
+        f"{'avg_vx_w':>8s} | "
+        f"{'avg_vy_w':>8s} | "
         f"{'avg_z':>8s} | "
         f"{'act':>8s} | "
         f"{'dx':>8s} | "
         f"{'dy':>8s} | "
         f"{'max|y|':>8s} | "
         f"{'falls':>5s} | "
-        f"{'ep_len':>8s}"
+        f"{'ep_len':>8s} | "
+        f"{'reason':>18s}"
     )
-    print("-" * 116)
+    print("-" * 128)
 
     results = []
 
@@ -298,6 +425,8 @@ def main():
 
             results.append(result)
 
+            reasons_text = make_reasons_text(result["reset_reasons"])
+
             print(
                 f"{result['payload_mass']:8.3f} | "
                 f"{result['friction']:8.3f} | "
@@ -309,14 +438,37 @@ def main():
                 f"{result['drift_y']:8.3f} | "
                 f"{result['max_abs_y']:8.3f} | "
                 f"{result['falls']:5d} | "
-                f"{result['avg_episode_len']:8.1f}"
+                f"{result['avg_episode_len']:8.1f} | "
+                f"{reasons_text:>18s}"
             )
 
-        print("-" * 116)
+            if result["first_reset"] is not None:
+                r = result["first_reset"]
+                print(
+                    "    first reset: "
+                    f"step={r['step']}, "
+                    f"ep_len={r['episode_len']}, "
+                    f"reason={r['reason']}, "
+                    f"roll={r['roll']:.3f}, "
+                    f"pitch={r['pitch']:.3f}, "
+                    f"z={r['z']:.3f}, "
+                    f"yaw_accum={r['yaw_accum']:.3f}, "
+                    f"lat_err={r['lateral_error']:.3f}, "
+                    f"vx_w={r['vx_world']:.3f}, "
+                    f"vy_w={r['vy_world']:.3f}, "
+                    f"vx_b={r['vx_body']:.3f}, "
+                    f"vy_b={r['vy_body']:.3f}"
+                )
+
+        print("-" * 128)
 
     best = min(
         results,
-        key=lambda r: abs(r["avg_vx"] - args.vx) + 0.2 * r["falls"] + abs(r["drift_y"]),
+        key=lambda r: (
+            abs(r["avg_vx"] - args.vx)
+            + 0.2 * r["falls"]
+            + abs(r["drift_y"])
+        ),
     )
 
     print()
@@ -324,7 +476,9 @@ def main():
         "Best approximate setup by simple score: "
         f"payload={best['payload_mass']:.3f}, "
         f"friction={best['friction']:.3f} "
-        f"(avg_vx={best['avg_vx']:.3f}, falls={best['falls']}, drift_y={best['drift_y']:.3f})"
+        f"(avg_vx_w={best['avg_vx']:.3f}, "
+        f"falls={best['falls']}, "
+        f"drift_y={best['drift_y']:.3f})"
     )
 
 

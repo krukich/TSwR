@@ -36,8 +36,8 @@ def main():
     )
 
     reward_cfg["reward_scales"] = {}
-    env_cfg["termination_if_roll_greater_than"] = 50
-    env_cfg["termination_if_pitch_greater_than"] = 50
+    env_cfg["termination_if_roll_greater_than"] = 10
+    env_cfg["termination_if_pitch_greater_than"] = 10
 
     env = Go2Env(
         num_envs=1,
@@ -67,7 +67,7 @@ def main():
     obs, _ = env.reset()
 
     iteration = 0
-    lin_x_range = [0.5, 4.0]
+    lin_x_range = [0.5, 2.0]
 
     with torch.no_grad():
         while True:

@@ -20,14 +20,34 @@ class Go2Env:
         command_cfg,
         show_viewer=False,
         device="cuda:0",
-        add_camera=False,
     ):
         self.device = torch.device(device)
 
         self.num_envs = num_envs
         self.base_num_obs = obs_cfg.get("base_num_obs", obs_cfg["num_obs"])
-        self.privileged_raw_dim = obs_cfg.get("privileged_raw_dim", 5)
-        self.privileged_encoder_dim = obs_cfg.get("privileged_encoder_dim", 6)
+        self.privileged_raw_dim = obs_cfg.get("privileged_raw_dim", 2)
+        self.privileged_encoder_dim = obs_cfg.get("privileged_encoder_dim", 3)
+        default_include_payload_pos = (
+            self.privileged_raw_dim >= 5 or self.privileged_encoder_dim >= 6
+        )
+        self.include_payload_pos_in_privileged_obs = bool(
+            env_cfg.get(
+                "include_payload_pos_in_privileged_obs",
+                default_include_payload_pos,
+            )
+        )
+        expected_raw_dim = 5 if self.include_payload_pos_in_privileged_obs else 2
+        expected_encoder_dim = 6 if self.include_payload_pos_in_privileged_obs else 3
+        if self.privileged_raw_dim != expected_raw_dim:
+            raise ValueError(
+                "privileged_raw_dim does not match payload privileged layout: "
+                f"got {self.privileged_raw_dim}, expected {expected_raw_dim}"
+            )
+        if self.privileged_encoder_dim != expected_encoder_dim:
+            raise ValueError(
+                "privileged_encoder_dim does not match payload privileged layout: "
+                f"got {self.privileged_encoder_dim}, expected {expected_encoder_dim}"
+            )
         computed_num_obs = self.base_num_obs + self.privileged_encoder_dim
         computed_num_privileged_obs = computed_num_obs + self.privileged_raw_dim
         self.num_obs = obs_cfg.get("num_obs", computed_num_obs)
@@ -114,16 +134,6 @@ class Go2Env:
             )
         )
 
-        self.cam_0 = None
-        if add_camera:
-            self.cam_0 = self.scene.add_camera(
-                res=(1920, 1080),
-                pos=(2.5, 0.5, 3.5),
-                lookat=(0, 0, 0.5),
-                fov=40,
-                GUI=True,
-            )
-
         self.scene.build(
             n_envs=num_envs,
             env_spacing=(1.0, 1.0),
@@ -135,6 +145,11 @@ class Go2Env:
         self.payload_link = self._find_payload_link()
         self.payload_ls_idx_local = [self.payload_link.idx_local]
         self.payload_link_mass = float(self.payload_link.get_mass())
+        self.payload_pos_default = torch.tensor(
+            self._get_payload_position_cfg(),
+            device=self.device,
+            dtype=gs.tc_float,
+        ).view(1, 1, 3)
         self._log_payload_setup()
 
         self.motor_dofs = [
@@ -183,6 +198,11 @@ class Go2Env:
             )
 
         self.base_lin_vel = torch.zeros(
+            (self.num_envs, 3),
+            device=self.device,
+            dtype=gs.tc_float,
+        )
+        self.base_lin_vel_world = torch.zeros(
             (self.num_envs, 3),
             device=self.device,
             dtype=gs.tc_float,
@@ -256,7 +276,6 @@ class Go2Env:
 
         self.dof_pos = torch.zeros_like(self.actions)
         self.dof_vel = torch.zeros_like(self.actions)
-        self.last_dof_vel = torch.zeros_like(self.actions)
 
         self.base_pos = torch.zeros(
             (self.num_envs, 3),
@@ -274,6 +293,18 @@ class Go2Env:
             dtype=gs.tc_float,
         )
 
+        self.episode_start_y = torch.zeros(
+            (self.num_envs,),
+            device=self.device,
+            dtype=gs.tc_float,
+        )
+
+        self.yaw_angle_accum = torch.zeros(
+            (self.num_envs,),
+            device=self.device,
+            dtype=gs.tc_float,
+        )
+
         self.default_dof_pos = torch.tensor(
             [
                 self.env_cfg["default_joint_angles"][name]
@@ -284,11 +315,6 @@ class Go2Env:
         )
 
         self.jump_toggled_buf = torch.zeros(
-            (self.num_envs,),
-            device=self.device,
-            dtype=gs.tc_float,
-        )
-        self.jump_target_height = torch.zeros(
             (self.num_envs,),
             device=self.device,
             dtype=gs.tc_float,
@@ -432,21 +458,47 @@ class Go2Env:
             return self._get_cfg_range(primary_key)
         return self._get_cfg_range(fallback_key)
 
+    def _get_payload_position_cfg(self):
+        values = self.env_cfg.get("payload_pos", (0.0, 0.0, 0.05))
+        if len(values) != 3:
+            raise ValueError(f"payload_pos must have exactly three values, got {values}")
+        return tuple(float(value) for value in values)
+
     def _log_payload_setup(self):
         mass_range = self._get_cfg_range("payload_mass_range")
-        pos_x_range = self._get_cfg_range("payload_pos_x_range")
-        pos_y_range = self._get_cfg_range("payload_pos_y_range")
-        pos_z_range = self._get_cfg_range("payload_pos_z_range")
+        if self.include_payload_pos_in_privileged_obs:
+            pos_x_range = self._get_cfg_range("payload_pos_x_range")
+            pos_y_range = self._get_cfg_range("payload_pos_y_range")
+            pos_z_range = self._get_cfg_range("payload_pos_z_range")
 
+            if max(
+                abs(mass_range[0]),
+                abs(mass_range[1]),
+                abs(pos_x_range[0]),
+                abs(pos_x_range[1]),
+                abs(pos_y_range[0]),
+                abs(pos_y_range[1]),
+                abs(pos_z_range[0]),
+                abs(pos_z_range[1]),
+            ) <= 0.0:
+                return
+
+            print(
+                "[Go2Env] payload carrier="
+                f"{self.payload_link.name} "
+                f"carrier_mass={self.payload_link_mass:.3f}kg "
+                f"mass_range={mass_range} "
+                f"pos_x_range={pos_x_range} "
+                f"pos_y_range={pos_y_range} "
+                f"pos_z_range={pos_z_range}"
+            )
+            return
+
+        payload_pos = tuple(float(value) for value in self.payload_pos_default.view(-1).tolist())
         if max(
             abs(mass_range[0]),
             abs(mass_range[1]),
-            abs(pos_x_range[0]),
-            abs(pos_x_range[1]),
-            abs(pos_y_range[0]),
-            abs(pos_y_range[1]),
-            abs(pos_z_range[0]),
-            abs(pos_z_range[1]),
+            *(abs(value) for value in payload_pos),
         ) <= 0.0:
             return
 
@@ -455,9 +507,7 @@ class Go2Env:
             f"{self.payload_link.name} "
             f"carrier_mass={self.payload_link_mass:.3f}kg "
             f"mass_range={mass_range} "
-            f"pos_x_range={pos_x_range} "
-            f"pos_y_range={pos_y_range} "
-            f"pos_z_range={pos_z_range}"
+            f"fixed_pos={payload_pos}"
         )
 
     def _sample_payload(self, envs_idx):
@@ -466,9 +516,6 @@ class Go2Env:
 
         num_envs = len(envs_idx)
         mass_low, mass_high = self._get_cfg_range("payload_mass_range")
-        pos_x_low, pos_x_high = self._get_cfg_range("payload_pos_x_range")
-        pos_y_low, pos_y_high = self._get_cfg_range("payload_pos_y_range")
-        pos_z_low, pos_z_high = self._get_cfg_range("payload_pos_z_range")
 
         self.payload_mass_shift[envs_idx, 0] = gs_rand_float(
             mass_low,
@@ -476,24 +523,31 @@ class Go2Env:
             (num_envs,),
             self.device,
         )
-        self.payload_pos_local[envs_idx, 0, 0] = gs_rand_float(
-            pos_x_low,
-            pos_x_high,
-            (num_envs,),
-            self.device,
-        )
-        self.payload_pos_local[envs_idx, 0, 1] = gs_rand_float(
-            pos_y_low,
-            pos_y_high,
-            (num_envs,),
-            self.device,
-        )
-        self.payload_pos_local[envs_idx, 0, 2] = gs_rand_float(
-            pos_z_low,
-            pos_z_high,
-            (num_envs,),
-            self.device,
-        )
+        if self.include_payload_pos_in_privileged_obs:
+            pos_x_low, pos_x_high = self._get_cfg_range("payload_pos_x_range")
+            pos_y_low, pos_y_high = self._get_cfg_range("payload_pos_y_range")
+            pos_z_low, pos_z_high = self._get_cfg_range("payload_pos_z_range")
+
+            self.payload_pos_local[envs_idx, 0, 0] = gs_rand_float(
+                pos_x_low,
+                pos_x_high,
+                (num_envs,),
+                self.device,
+            )
+            self.payload_pos_local[envs_idx, 0, 1] = gs_rand_float(
+                pos_y_low,
+                pos_y_high,
+                (num_envs,),
+                self.device,
+            )
+            self.payload_pos_local[envs_idx, 0, 2] = gs_rand_float(
+                pos_z_low,
+                pos_z_high,
+                (num_envs,),
+                self.device,
+            )
+        else:
+            self.payload_pos_local[envs_idx] = self.payload_pos_default.expand(num_envs, -1, -1)
 
         total_link_mass = self.payload_link_mass + self.payload_mass_shift[envs_idx, 0]
         payload_ratio = torch.where(
@@ -522,59 +576,78 @@ class Go2Env:
         return 2.0 * ((values - float(low)) / denom) - 1.0
 
     def _get_privileged_raw(self):
-        return torch.cat(
-            [
-                self.ground_friction_buf,
-                self.payload_mass_shift,
-                self.payload_pos_local.squeeze(1),
-            ],
-            dim=-1,
-        )
+        privileged_parts = [
+            self.ground_friction_buf,
+            self.payload_mass_shift,
+        ]
+        if self.include_payload_pos_in_privileged_obs:
+            privileged_parts.append(self.payload_pos_local.squeeze(1))
+        return torch.cat(privileged_parts, dim=-1)
 
     def _encode_privileged(self, privileged_raw):
-        friction = torch.clamp(privileged_raw[:, 0:1], 1.0e-2, 5.0)
+        friction = privileged_raw[:, 0:1]
         payload_mass = privileged_raw[:, 1:2]
-        payload_pos = privileged_raw[:, 2:5]
 
-        friction_linear = self._normalize_range(friction, 1.0e-2, 5.0)
-        friction_log = self._normalize_range(torch.log(friction), math.log(1.0e-2), math.log(5.0))
+        friction_encode_range = self.env_cfg.get(
+            "ground_friction_encode_range",
+            self.env_cfg.get("ground_friction_range", [0.1, 1.0]),
+        )
+        friction_low = float(friction_encode_range[0])
+        friction_high = float(friction_encode_range[1])
+        friction = torch.clamp(
+            friction,
+            min=friction_low,
+            max=friction_high,
+        )
+
+        friction_linear = self._normalize_range(
+            friction,
+            friction_low,
+            friction_high,
+        )
+        friction_log = self._normalize_range(
+            torch.log(friction),
+            math.log(friction_low),
+            math.log(friction_high),
+        )
 
         mass_low, mass_high = self._get_cfg_range_with_fallback(
             "payload_mass_encode_range",
             "payload_mass_range",
         )
-        pos_x_low, pos_x_high = self._get_cfg_range_with_fallback(
-            "payload_pos_x_encode_range",
-            "payload_pos_x_range",
-        )
-        pos_y_low, pos_y_high = self._get_cfg_range_with_fallback(
-            "payload_pos_y_encode_range",
-            "payload_pos_y_range",
-        )
-        pos_z_low, pos_z_high = self._get_cfg_range_with_fallback(
-            "payload_pos_z_encode_range",
-            "payload_pos_z_range",
-        )
 
         payload_mass_encoded = self._normalize_range(payload_mass, mass_low, mass_high)
-        payload_pos_encoded = torch.cat(
-            [
-                self._normalize_range(payload_pos[:, 0:1], pos_x_low, pos_x_high),
-                self._normalize_range(payload_pos[:, 1:2], pos_y_low, pos_y_high),
-                self._normalize_range(payload_pos[:, 2:3], pos_z_low, pos_z_high),
-            ],
-            dim=-1,
-        )
+        encoded_parts = [
+            friction_linear,
+            friction_log,
+            payload_mass_encoded,
+        ]
 
-        return torch.cat(
-            [
-                friction_linear,
-                friction_log,
-                payload_mass_encoded,
-                payload_pos_encoded,
-            ],
-            dim=-1,
-        )
+        if self.include_payload_pos_in_privileged_obs:
+            payload_pos = privileged_raw[:, 2:5]
+            pos_x_low, pos_x_high = self._get_cfg_range_with_fallback(
+                "payload_pos_x_encode_range",
+                "payload_pos_x_range",
+            )
+            pos_y_low, pos_y_high = self._get_cfg_range_with_fallback(
+                "payload_pos_y_encode_range",
+                "payload_pos_y_range",
+            )
+            pos_z_low, pos_z_high = self._get_cfg_range_with_fallback(
+                "payload_pos_z_encode_range",
+                "payload_pos_z_range",
+            )
+            payload_pos_encoded = torch.cat(
+                [
+                    self._normalize_range(payload_pos[:, 0:1], pos_x_low, pos_x_high),
+                    self._normalize_range(payload_pos[:, 1:2], pos_y_low, pos_y_high),
+                    self._normalize_range(payload_pos[:, 2:3], pos_z_low, pos_z_high),
+                ],
+                dim=-1,
+            )
+            encoded_parts.append(payload_pos_encoded)
+
+        return torch.cat(encoded_parts, dim=-1)
 
     def _sample_commands(self, envs_idx):
         if len(envs_idx) == 0:
@@ -631,16 +704,6 @@ class Go2Env:
         self.commands[envs_idx, 1] *= height_diff_scale
         self.commands[envs_idx, 2] *= height_diff_scale
 
-    def _sample_jump_commands(self, envs_idx):
-        if len(envs_idx) == 0:
-            return
-
-        self.commands[envs_idx, 4] = gs_rand_float(
-            *self.command_cfg["jump_range"],
-            (len(envs_idx),),
-            self.device,
-        )
-
     def get_observations(self):
         return self.obs_buf
 
@@ -686,16 +749,18 @@ class Go2Env:
         self.robot.zero_all_dofs_velocity(envs_idx)
 
         self.base_lin_vel[envs_idx] = 0.0
+        self.base_lin_vel_world[envs_idx] = 0.0
         self.base_ang_vel[envs_idx] = 0.0
 
+        self.episode_start_y[envs_idx] = self.base_pos[envs_idx, 1]
+        self.yaw_angle_accum[envs_idx] = 0.0
+
         self.last_actions[envs_idx] = 0.0
-        self.last_dof_vel[envs_idx] = 0.0
 
         self.episode_length_buf[envs_idx] = 0
         self.reset_buf[envs_idx] = True
 
         self.jump_toggled_buf[envs_idx] = 0.0
-        self.jump_target_height[envs_idx] = 0.0
 
         self._sample_ground_friction(envs_idx)
         self._sample_payload(envs_idx)
@@ -737,6 +802,8 @@ class Go2Env:
 
         self._update_state()
 
+        self.yaw_angle_accum += self.base_ang_vel[:, 2] * self.dt
+
         envs_idx = (
             (
                 self.episode_length_buf
@@ -755,49 +822,85 @@ class Go2Env:
             ]
             self._sample_commands(random_idxs_1)
 
-        jump_cmd_now = (self.commands[:, 4] > 0.0).float()
+        timeout_buf = self.episode_length_buf > self.max_episode_length
 
-        toggle_mask = (
-            (self.jump_toggled_buf == 0.0)
-            & (jump_cmd_now > 0.0)
-        ).float()
-
-        self.jump_toggled_buf += toggle_mask * self.reward_cfg["jump_reward_steps"]
-        self.jump_toggled_buf = torch.clamp(
-            self.jump_toggled_buf - 1.0,
-            min=0.0,
+        roll_buf = (
+                torch.abs(self.base_euler[:, 0])
+                > self.env_cfg["termination_if_roll_greater_than"]
         )
 
-        self.jump_target_height = torch.where(
-            jump_cmd_now > 0.0,
-            self.commands[:, 4],
-            self.jump_target_height,
+        pitch_buf = (
+                torch.abs(self.base_euler[:, 1])
+                > self.env_cfg["termination_if_pitch_greater_than"]
         )
 
-        self.reset_buf = self.episode_length_buf > self.max_episode_length
-        self.reset_buf |= (
-            torch.abs(self.base_euler[:, 1])
-            > self.env_cfg["termination_if_pitch_greater_than"]
-        )
-        self.reset_buf |= (
-            torch.abs(self.base_euler[:, 0])
-            > self.env_cfg["termination_if_roll_greater_than"]
-        )
+        self.reset_buf = timeout_buf | roll_buf | pitch_buf
+        dones = self.reset_buf.clone()
 
-        time_out_idx = (
-            self.episode_length_buf > self.max_episode_length
-        ).nonzero(as_tuple=False).flatten()
+        self.extras["time_outs"] = timeout_buf.float().clone()
 
-        self.extras["time_outs"] = torch.zeros_like(
-            self.reset_buf,
+        # Reset reason flags. These are saved BEFORE reset_idx().
+        self.extras["reset_timeout"] = timeout_buf.clone()
+        self.extras["reset_roll"] = roll_buf.clone()
+        self.extras["reset_pitch"] = pitch_buf.clone()
+
+        reason_code = torch.zeros(
+            (self.num_envs,),
             device=self.device,
-            dtype=gs.tc_float,
+            dtype=torch.long,
         )
-        self.extras["time_outs"][time_out_idx] = 1.0
+        reason_code[timeout_buf] = 1
+        reason_code[roll_buf] = 2
+        reason_code[pitch_buf] = 3
+        reason_code[roll_buf & pitch_buf] = 4
+        reason_code[timeout_buf & (roll_buf | pitch_buf)] = 5
 
-        self.reset_idx(
-            self.reset_buf.nonzero(as_tuple=False).flatten()
-        )
+        self.extras["reset_reason_code"] = reason_code.clone()
+
+        self.extras["terminal_roll"] = self.base_euler[:, 0].clone()
+        self.extras["terminal_pitch"] = self.base_euler[:, 1].clone()
+        self.extras["terminal_z"] = self.base_pos[:, 2].clone()
+        self.extras["terminal_yaw_accum"] = self.yaw_angle_accum.clone()
+        self.extras["terminal_lateral_error"] = (
+                self.base_pos[:, 1] - self.episode_start_y
+        ).clone()
+
+        self.extras["terminal_vx_world"] = self.base_lin_vel_world[:, 0].clone()
+        self.extras["terminal_vy_world"] = self.base_lin_vel_world[:, 1].clone()
+        self.extras["terminal_vx_body"] = self.base_lin_vel[:, 0].clone()
+        self.extras["terminal_vy_body"] = self.base_lin_vel[:, 1].clone()
+
+        if self.env_cfg.get("debug_reset_reasons", False) and torch.any(dones):
+            reset_ids_debug = dones.nonzero(as_tuple=False).flatten()
+
+            for env_id in reset_ids_debug[:5]:
+                i = int(env_id.item())
+
+                reasons = []
+                if bool(timeout_buf[i].item()):
+                    reasons.append("timeout")
+                if bool(roll_buf[i].item()):
+                    reasons.append("roll")
+                if bool(pitch_buf[i].item()):
+                    reasons.append("pitch")
+                if not reasons:
+                    reasons.append("unknown")
+
+                print(
+                    "[RESET DEBUG] "
+                    f"env={i} "
+                    f"reason={'+'.join(reasons)} "
+                    f"ep_len={int(self.episode_length_buf[i].item())} "
+                    f"roll={float(self.base_euler[i, 0].item()):.4f} "
+                    f"pitch={float(self.base_euler[i, 1].item()):.4f} "
+                    f"z={float(self.base_pos[i, 2].item()):.4f} "
+                    f"vx_w={float(self.base_lin_vel_world[i, 0].item()):.4f} "
+                    f"vy_w={float(self.base_lin_vel_world[i, 1].item()):.4f} "
+                    f"vx_b={float(self.base_lin_vel[i, 0].item()):.4f} "
+                    f"vy_b={float(self.base_lin_vel[i, 1].item()):.4f} "
+                    f"yaw_accum={float(self.yaw_angle_accum[i].item()):.4f} "
+                    f"lat_err={float((self.base_pos[i, 1] - self.episode_start_y[i]).item()):.4f}"
+                )
 
         self.rew_buf[:] = 0.0
 
@@ -806,14 +909,17 @@ class Go2Env:
             self.rew_buf += rew
             self.episode_sums[name] += rew
 
-        self._compute_observations()
-
-        self.last_actions[:] = self.actions[:]
-        self.last_dof_vel[:] = self.dof_vel[:]
+        reset_ids = dones.nonzero(as_tuple=False).flatten()
+        self.reset_idx(reset_ids)
 
         self.commands[:, 4] = 0.0
 
-        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
+        alive_ids = (~dones.bool()).nonzero(as_tuple=False).flatten()
+        self.last_actions[alive_ids] = self.actions[alive_ids]
+
+        self._compute_observations()
+
+        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, dones, self.extras
 
     def _update_state(self):
         self.base_pos[:] = self.robot.get_pos()
@@ -828,8 +934,9 @@ class Go2Env:
 
         inv_base_quat = inv_quat(self.base_quat)
 
+        self.base_lin_vel_world[:] = self.robot.get_vel()
         self.base_lin_vel[:] = transform_by_quat(
-            self.robot.get_vel(),
+            self.base_lin_vel_world,
             inv_base_quat,
         )
         self.base_ang_vel[:] = transform_by_quat(
@@ -850,6 +957,8 @@ class Go2Env:
             if self.env_cfg.get("use_last_actions_in_obs", True)
             else self.actions
         )
+        lateral_error = (self.base_pos[:, 1] - self.episode_start_y).unsqueeze(-1)
+        yaw_angle_accum = self.yaw_angle_accum.unsqueeze(-1)
 
         base_obs = torch.cat(
             [
@@ -859,6 +968,8 @@ class Go2Env:
                 (self.dof_pos - self.default_dof_pos) * self.obs_scales["dof_pos"],  # 12
                 self.dof_vel * self.obs_scales["dof_vel"],                 # 12
                 action_obs,                                                # 12
+                lateral_error,                                             # 1
+                yaw_angle_accum,                                           # 1
                 (
                     self.jump_toggled_buf
                     / self.reward_cfg["jump_reward_steps"]
@@ -897,19 +1008,55 @@ class Go2Env:
             self.obs_cfg.get("clip_observations", 100.0),
         )
 
-
-    def _reward_tracking_lin_vel(self):
-        lin_vel_error = torch.sum(
-            torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]),
-            dim=1,
+    def _reward_tracking_lin_vel_x(self):
+        lin_vel_x_error = torch.square(
+            self.commands[:, 0] - self.base_lin_vel[:, 0]
         )
-        return torch.exp(-lin_vel_error / self.reward_cfg["tracking_sigma"])
 
-    def _reward_tracking_ang_vel(self):
-        ang_vel_error = torch.square(
-            self.commands[:, 2] - self.base_ang_vel[:, 2]
+        return torch.exp(-lin_vel_x_error / self.reward_cfg["tracking_sigma"])
+
+    def _reward_lin_vel_y(self):
+        active_mask = (self.jump_toggled_buf < 0.01).float()
+
+        return active_mask * torch.square(
+            self.base_lin_vel[:, 1]
         )
-        return torch.exp(-ang_vel_error / self.reward_cfg["tracking_sigma"])
+
+    def _reward_tracking_world_lin_vel_x(self):
+        lin_vel_x_error = torch.square(
+            self.commands[:, 0] - self.base_lin_vel_world[:, 0]
+        )
+
+        return torch.exp(-lin_vel_x_error / self.reward_cfg["tracking_sigma"])
+
+    def _reward_world_lin_vel_y(self):
+        active_mask = (self.jump_toggled_buf < 0.01).float()
+
+        return active_mask * torch.square(
+            self.base_lin_vel_world[:, 1]
+        )
+
+    def _reward_yaw_rate(self):
+        active_mask = (self.jump_toggled_buf < 0.01).float()
+
+        return active_mask * torch.square(
+            self.base_ang_vel[:, 2]
+        )
+
+    def _reward_yaw_drift(self):
+        active_mask = (self.jump_toggled_buf < 0.01).float()
+
+        return active_mask * torch.square(
+            self.yaw_angle_accum
+        )
+
+    def _reward_lateral_drift_y(self):
+        active_mask = (self.jump_toggled_buf < 0.01).float()
+
+        lateral_error = self.base_pos[:, 1] - self.episode_start_y
+
+        return active_mask * torch.square(lateral_error)
+
 
     def _reward_lin_vel_z(self):
         active_mask = (self.jump_toggled_buf < 0.01).float()
@@ -935,48 +1082,5 @@ class Go2Env:
             self.base_pos[:, 2] - self.commands[:, 3]
         )
 
-    def _reward_jump_height_tracking(self):
-        mask = (
-            (self.jump_toggled_buf >= 0.3 * self.reward_cfg["jump_reward_steps"])
-            & (self.jump_toggled_buf < 0.6 * self.reward_cfg["jump_reward_steps"])
-        )
-        target_height = self.jump_target_height
-
-        height_diff = torch.exp(
-            -torch.square(self.base_pos[:, 2] - target_height)
-        )
-
-        return mask.float() * height_diff
-
-    def _reward_jump_height_achievement(self):
-        mask = (
-            (self.jump_toggled_buf >= 0.3 * self.reward_cfg["jump_reward_steps"])
-            & (self.jump_toggled_buf < 0.6 * self.reward_cfg["jump_reward_steps"])
-        )
-        target_height = self.jump_target_height
-
-        binary_bonus = (
-            torch.abs(self.base_pos[:, 2] - target_height) < 0.2
-        ).float()
-
-        return mask.float() * binary_bonus
-
-    def _reward_jump_speed(self):
-        mask = (
-            (self.jump_toggled_buf >= 0.3 * self.reward_cfg["jump_reward_steps"])
-            & (self.jump_toggled_buf < 0.6 * self.reward_cfg["jump_reward_steps"])
-        )
-
-        return mask.float() * torch.exp(self.base_lin_vel[:, 2]) * 0.2
-
-    def _reward_jump_landing(self):
-        mask = (
-            self.jump_toggled_buf
-            >= 0.6 * self.reward_cfg["jump_reward_steps"]
-        )
-
-        height_error = -torch.square(
-            self.base_pos[:, 2] - self.reward_cfg["base_height_target"]
-        )
-
-        return mask.float() * height_error
+    def _reward_termination(self):
+        return self.reset_buf.float() * (1.0 - self.extras["time_outs"])

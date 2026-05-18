@@ -6,3 +6,6 @@ mujoco_menagerie/
 
 unitree_ros/
 logs/
+
+data/
+results/

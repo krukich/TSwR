@@ -56,9 +56,9 @@ def get_train_cfg(exp_name, max_iterations):
 
 
 def get_cfgs():
-    base_num_obs = 48
-    privileged_raw_dim = 5
-    privileged_encoder_dim = 6
+    base_num_obs = 50
+    privileged_raw_dim = 2
+    privileged_encoder_dim = 3
 
     env_cfg = {
         "asset_path": "urdf/go2/urdf/go2.urdf",
@@ -110,20 +110,17 @@ def get_cfgs():
         "termination_if_roll_greater_than": 10,
         "termination_if_pitch_greater_than": 10,
 
-        "base_init_pos": [0.0, 0.0, 0.42],
+        "base_init_pos": [0.0, 0.0, 0.32],
         "base_init_quat": [1.0, 0.0, 0.0, 0.0],
 
         "ground_friction_range": [0.1, 1.0],
+        "ground_friction_encode_range": [0.1, 1.0],
 
         "payload_link_name": "base_link",
+        "include_payload_pos_in_privileged_obs": False,
         "payload_mass_range": [0.0, 2.0],
-        "payload_pos_x_range": [-0.02, 0.02],
-        "payload_pos_y_range": [-0.02, 0.02],
-        "payload_pos_z_range": [0.03, 0.08],
+        "payload_pos": [0.0, 0.0, 0.05],
         "payload_mass_encode_range": [0.0, 2.0],
-        "payload_pos_x_encode_range": [-0.02, 0.02],
-        "payload_pos_y_encode_range": [-0.02, 0.02],
-        "payload_pos_z_encode_range": [0.03, 0.08],
 
         "episode_length_s": 20.0,
         "resampling_time_s": 4.0,
@@ -157,24 +154,31 @@ def get_cfgs():
         "feet_height_target": 0.075,
         "jump_upward_velocity": 1.2,
         "jump_reward_steps": 50,
-
+        
         "reward_scales": {
-            "tracking_lin_vel": 1.0,
-            "tracking_ang_vel": 0.2,
+            "tracking_world_lin_vel_x": 1.0,
+
+            "world_lin_vel_y": -1.0,
+            "lateral_drift_y": -1.0,
+
+            "yaw_rate": -0.1,
+            "yaw_drift": -0.5,
 
             "lin_vel_z": -1.0,
             "base_height": -50.0,
             "action_rate": -0.005,
             "similar_to_default": -0.1,
+
+            "termination": -20.0,
         },
     }
 
     command_cfg = {
         "num_commands": 5,
 
-        "lin_vel_x_range": [-1.0, 2.0],
-        "lin_vel_y_range": [-0.5, 0.5],
-        "ang_vel_range": [-0.6, 0.6],
+        "lin_vel_x_range": [0.0, 2.0],
+        "lin_vel_y_range": [0.0, 0.0],
+        "ang_vel_range": [0.0, 0.0],
 
         "height_range": [0.2, 0.4],
         "jump_range": [0.0, 0.0],
