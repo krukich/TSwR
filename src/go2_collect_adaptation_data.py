@@ -599,3 +599,55 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+"""
+Для чистого teacher rollout:
+
+python go2_collect_adaptation_data.py \
+  -e go2-teacher-friction-payload \
+  --ckpt 10000 \
+  -B 512 \
+  --device cuda:0 \
+  --max_samples 300000 \
+  --skip_initial_steps 150 \
+  --rollout_mode teacher \
+  --out data/adaptation/go2_teacher_rollout_300k_skip150.pt
+
+Для adapted rollout с уже обученным adapter-ом:
+
+python go2_collect_adaptation_data.py \
+  -e go2-teacher-friction-payload \
+  --ckpt 10000 \
+  -B 512 \
+  --device cuda:0 \
+  --max_samples 300000 \
+  --skip_initial_steps 150 \
+  --rollout_mode adapted \
+  --adaptation_path logs/adaptation/adaptation_mlp.pt \
+  --bootstrap_true_steps 150 \
+  --out data/adaptation/go2_adapted_rollout_300k_skip150.pt
+
+Для mixed rollout:
+
+python go2_collect_adaptation_data.py \
+  -e go2-teacher-friction-payload \
+  --ckpt 10000 \
+  -B 512 \
+  --device cuda:0 \
+  --max_samples 300000 \
+  --skip_initial_steps 150 \
+  --rollout_mode mixed \
+  --adaptation_path logs/adaptation/adaptation_mlp.pt \
+  --teacher_prob 0.5 \
+  --bootstrap_true_steps 150 \
+  --out data/adaptation/go2_mixed_rollout_300k_skip150.pt
+"""
