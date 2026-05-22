@@ -839,7 +839,6 @@ class Go2Env:
 
         self.extras["time_outs"] = timeout_buf.float().clone()
 
-        # Reset reason flags. These are saved BEFORE reset_idx().
         self.extras["reset_timeout"] = timeout_buf.clone()
         self.extras["reset_roll"] = roll_buf.clone()
         self.extras["reset_pitch"] = pitch_buf.clone()

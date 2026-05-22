@@ -29,7 +29,6 @@ def parse_friction_list(text: str):
 
         value = float(item)
 
-        # Same range as teacher training.
         value = max(value, 0.1)
         value = min(value, 1.0)
 
@@ -133,7 +132,6 @@ def run_one_friction(
     local_env_cfg = dict(env_cfg)
     local_reward_cfg = dict(reward_cfg)
 
-    # During eval we do not need reward terms, only policy execution and reset logic.
     local_reward_cfg["reward_scales"] = {}
 
     local_env_cfg["ground_friction"] = float(friction)
@@ -256,7 +254,6 @@ def run_one_friction(
                 episode_len_sum += current_ep_len
                 current_ep_len = 0
 
-                # After env.step(), done env is already reset.
                 x_start = float(env.base_pos[0, 0].item())
                 y_start = float(env.base_pos[0, 1].item())
                 final_x = x_start
