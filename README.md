@@ -159,8 +159,21 @@ Moduł RMA był testowany w zakresie różnych parametrów środowiska, obejmuj�
 
 
 ## Bibliografia
+
 - RMA: Rapid Motor Adaptation for Legged Robots  
   https://arxiv.org/pdf/2107.04034
+
+- Genesis: general-purpose robotics and embodied AI simulator  
+  https://github.com/Genesis-Embodied-AI/Genesis
+
+- Genesis locomotion example for Unitree Go2  
+  https://github.com/Genesis-Embodied-AI/Genesis/blob/main/examples/locomotion/go2_train.py
+
+- RSL-RL: reinforcement learning library used for PPO training  
+  https://github.com/leggedrobotics/rsl_rl
+
+- Argo-Robot quadrupeds locomotion  
+  https://github.com/Argo-Robot/quadrupeds_locomotion
 
 ---
 
