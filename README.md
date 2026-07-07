@@ -1,164 +1,152 @@
-# Teoria sterowania w robotyce
+# Robotics Control Theory
 
-## Opis projektu
-Celem projektu jest implementacja i analiza algorytmu adaptacyjnego inspirowanego podejściem RMA (Rapid Motor Adaptation) dla robota kroczącego w środowisku symulacyjnym Genesis. Zadaniem modelu jest generowanie stabilnego ruchu robota w zmieniających się warunkach środowiskowych, takich jak różne wartości tarcia, śliskość podłoża oraz nierówności terenu.
+## Project Description
 
-W ramach projektu wytrenowano dwa komponenty: politykę sterującą ruchem robota oraz moduł adaptacyjny, który na podstawie historii stanów i akcji estymuje ukryty stan środowiska.
+The goal of this project is to implement and analyze an adaptive algorithm inspired by the RMA (Rapid Motor Adaptation) approach for a legged robot in the Genesis simulation environment. The model is designed to generate stable robot locomotion under changing environmental conditions, such as different friction values, slippery surfaces, and uneven terrain.
+
+As part of the project, two components were trained: a locomotion control policy and an adaptation module that estimates the hidden state of the environment based on the history of robot states and actions.
 
 ---
 
-## Cele
-- Implementacja polityki sterującej ruchem robota  
-- Implementacja modułu adaptacyjnego  
-- Trening modelu w środowisku Genesis  
-- Porównanie działania modelu adaptacyjnego w różnych warunkach testowych.
+## Goals
+
+- Implementation of a locomotion control policy
+- Implementation of an adaptation module
+- Model training in the Genesis environment
+- Comparison of the adaptive model performance under different test conditions
+
 ---
 
+## Environment Setup
 
-## Instalacja środowiska
+The project was prepared and tested on Linux. Python is required to run it, as well as access to the `genesis` and `rsl_rl` submodules, because the project code relies on specific versions of these libraries.
 
-Projekt był przygotowany i testowany w systemie Linux. Do uruchomienia wymagany jest Python oraz dostęp do submodułów `genesis` i `rsl_rl`, ponieważ kod projektu korzysta z konkretnych wersji tych bibliotek.
-
-Najpierw należy sklonować repozytorium razem z submodułami:
+First, clone the repository together with its submodules:
 
 ```bash
 git clone --recurse-submodules https://github.com/krukich/TSwR.git
 cd TSwR
 ```
 
-Jeżeli repozytorium zostało już sklonowane bez submodułów, należy pobrać je osobno:
+If the repository has already been cloned without submodules, initialize them separately:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-Następnie można uruchomić skrypt instalacyjny:
+Then run the installation script:
 
 ```bash
 bash scripts/setup.sh
 ```
 
-Skrypt tworzy środowisko wirtualne `.venv`, instaluje wymagane zależności oraz sprawdza dostępność submodułów i plików robota Go2.
+The script creates a `.venv` virtual environment, installs the required dependencies, and checks the availability of the submodules and Unitree Go2 robot files.
 
-Po zakończeniu instalacji środowisko należy aktywować poleceniem:
+After installation, activate the environment with:
 
 ```bash
 source .venv/bin/activate
 ```
 
-Od tego momentu można uruchamiać skrypty treningowe i ewaluacyjne z katalogu projektu. Wytrenowane modele nie są przechowywane bezpośrednio w repozytorium, dlatego należy pobrać je osobno z Google Drive.
+From this point, the training and evaluation scripts can be executed from the project directory. The trained models are not stored directly in the repository, so they must be downloaded separately from Google Drive.
 
-Gotowe komendy do uruchomienia poszczególnych eksperymentów znajdują się w opisach plików modeli na Google Drive.
+Ready-to-use commands for running individual experiments are included in the descriptions of the model files on Google Drive.
 
+## Trained Models
 
-## Wytrenowane modele
+The trained models are not stored directly in the repository because of the checkpoint file sizes. All current models are available in a separate Google Drive folder:
 
-Wytrenowane modele nie są przechowywane bezpośrednio w repozytorium ze względu na rozmiar plików checkpointów. Wszystkie aktualne modele znajdują się w osobnym katalogu na Google Drive:
+[Google Drive - trained models](https://drive.google.com/drive/folders/1x3uDen8MqZw5EVCSddOEvBN7ynM8qbgJ?usp=drive_link)
 
-[Google Drive - wytrenowane modele](https://drive.google.com/drive/folders/1x3uDen8MqZw5EVCSddOEvBN7ynM8qbgJ?usp=drive_link)
-
-W każdym katalogu konkretnego modelu, razem z plikami checkpointów, znajduje się plik `description.txt`, który zawiera krótki opis modelu, konfigurację treningu oraz zalecany sposób użycia.
-
----
-
-## Architektura
-Projekt składa się z dwóch głównych komponentów:
-
-- **Base Policy (π)** – generuje akcje na podstawie aktualnego stanu robota  
-- **Adaptation Module (φ)** – estymuje latent \(z_t\) na podstawie historii stanów i akcji  
+Each model directory contains a `description.txt` file together with the checkpoint files. This file includes a short description of the model, training configuration, and the recommended way to use it.
 
 ---
 
-## Opis plików
+## Architecture
 
-### Główne pliki projektu
+The project consists of two main components:
 
-- `src/go2_env.py` – główny plik środowiska symulacyjnego dla robota Unitree Go2. Definiuje dynamikę środowiska, obserwacje, akcje, nagrody, resetowanie epizodów oraz losowanie parametrów takich jak tarcie i masa dodatkowego obciążenia.
+- **Base Policy (π)** – generates actions based on the current state of the robot
+- **Adaptation Module (φ)** – estimates the latent state \(z_t\) based on the history of states and actions
 
-- `src/go2_train.py` – skrypt uruchamiający trening polityki sterującej w środowisku `Go2Env`. Zawiera konfigurację PPO, parametry środowiska, zakresy komend oraz ustawienia zapisu checkpointów.
+---
 
-- `src/go2_eval.py` – prosty skrypt ewaluacyjny do uruchomienia wytrenowanej polityki w jednym środowisku z wizualizacją. Pozwala sprawdzić zachowanie modelu dla wybranego checkpointu, prędkości zadanej i wysokości bazy.
+## File Description
 
-- `src/go2_eval_friction.py` – rozszerzony skrypt testowy do oceny działania polityki w różnych warunkach tarcia i obciążenia. Zbiera podstawowe metryki, takie jak średnia prędkość, liczba upadków, długość epizodów oraz przyczyny resetu.
+### Main Project Files
 
-- `src/check.py` – pomocniczy skrypt diagnostyczny sprawdzający poprawność wczytania modelu Go2 oraz mapowania 12 sterowanych stawów. Używany głównie do szybkiej weryfikacji konfiguracji URDF i indeksów DOF.
+- `src/go2_env.py` – the main simulation environment file for the Unitree Go2 robot. It defines the environment dynamics, observations, actions, rewards, episode resets, and randomization of parameters such as friction and additional payload mass.
 
-### Konfiguracja i uruchamianie
+- `src/go2_train.py` – the script used to start training the locomotion control policy in the `Go2Env` environment. It contains the PPO configuration, environment parameters, command ranges, and checkpoint saving settings.
 
-- `scripts/setup.sh` – skrypt przygotowujący środowisko projektu. Tworzy środowisko `.venv`, instaluje zależności, inicjalizuje submoduły `genesis` i `rsl_rl` oraz sprawdza dostępność plików URDF robota Go2.
+- `src/go2_eval.py` – a simple evaluation script used to run a trained policy in a single environment with visualization. It allows checking the model behavior for a selected checkpoint, target velocity, and base height.
 
-### Katalogi zewnętrzne
-Katalogi `genesis/` oraz `rsl_rl/` są używane w projekcie jako submoduły, ponieważ kod środowiska i treningu został przygotowany pod konkretne wersje bibliotek Genesis oraz rsl_rl.
-- `genesis/` – submoduł z symulatorem Genesis używanym do tworzenia środowiska fizycznego.
-- `rsl_rl/` – submoduł z biblioteką reinforcement learning wykorzystywaną do treningu polityki PPO.
+- `src/go2_eval_friction.py` – an extended testing script used to evaluate the policy under different friction and payload conditions. It collects basic metrics such as average velocity, number of falls, episode length, and reset reasons.
 
-## Wyniki eksperymentów
+- `src/check.py` – a helper diagnostic script that verifies correct loading of the Go2 model and the mapping of the 12 controlled joints. It is mainly used for quick verification of the URDF configuration and DOF indices.
 
-W ramach projektu przeprowadzono eksperymenty z uczeniem 
-polityki sterującej dla robota Unitree Go2 w symulatorze 
-Genesis oraz z testowaniem jej odporności na zmienne warunki 
-środowiskowe. Główna polityka była trenowana metodą PPO z 
-wykorzystaniem biblioteki `rsl_rl`, a robot był sterowany w 
-trybie pozycyjnym dla 12 stawów.
+### Configuration and Running
 
-Pierwszym etapem było wytrenowanie polityki bazowej, która 
-otrzymywała obserwacje proprioceptywne robota oraz informacje 
-o zadanej prędkości ruchu. Po treningu robot nauczył się 
-stabilnego chodu do przodu i był w stanie utrzymywać równowagę
-przy standardowych ustawieniach środowiska. Następnie wykonano testy generalizacji dla różnych wartości 
-tarcia podłoża oraz dodatkowej masy umieszczonej na robocie.
+- `scripts/setup.sh` – the project setup script. It creates the `.venv` environment, installs dependencies, initializes the `genesis` and `rsl_rl` submodules, and checks the availability of the Go2 robot URDF files.
 
-Ostatnim etapem było przygotowanie modułu adaptacyjnego 
-inspirowanego podejściem RMA. Moduł ten uczył się estymować 
-ukryte parametry środowiska na podstawie historii obserwacji i 
-akcji robota, dzięki czemu polityka nie musi bezpośrednio 
-otrzymywać informacji uprzywilejowanych podczas działania.
+### External Directories
 
-### Tryb teacher, tarcie 0.1
+The `genesis/` and `rsl_rl/` directories are used in this project as submodules, because the environment and training code were prepared for specific versions of the Genesis and rsl_rl libraries.
 
-Tryb `teacher` oznacza wariant testowy, w którym polityka otrzymuje prawdziwe wartości obserwacji uprzywilejowanych, czyli rzeczywiste parametry środowiska, takie jak tarcie podłoża i masa dodatkowego obciążenia. Jest to tryb referencyjny, ponieważ model nie musi estymować tych wartości na podstawie historii ruchu robota.
+- `genesis/` – a submodule containing the Genesis simulator used to create the physical simulation environment.
+- `rsl_rl/` – a submodule containing the reinforcement learning library used for PPO policy training.
 
-Testy przeprowadzono dla bardzo niskiej wartości tarcia podłoża równej `0.1` z dodatkowym obciążeniem `2 kg`. W takich warunkach robot utrzymał stabilny ruch przez cały epizod i nie odnotowano żadnego upadku (`falls = 0`).
+## Experiment Results
 
-Na wykresie widać, że prędkość w osi `x` szybko dochodzi do zadanej wartości `0.6 m/s`, a następnie utrzymuje się powyżej celu. Jednocześnie pojawia się niewielki dryf boczny w osi `y`, co jest oczekiwanym efektem przy tak niskim tarciu, ale nie prowadzi on do utraty stabilności.
+As part of the project, experiments were conducted on training a locomotion control policy for the Unitree Go2 robot in the Genesis simulator and testing its robustness under changing environmental conditions. The main policy was trained using PPO with the `rsl_rl` library, and the robot was controlled in position mode for 12 joints.
 
-Wartości tarcia oraz masy na wykresach parametrów uprzywilejowanych pozostają zgodne z rzeczywistą konfiguracją eksperymentu. Wynik ten pokazuje, że przy dostępie do prawdziwych parametrów środowiska polityka potrafi poprawnie poruszać się nawet na śliskim podłożu.
+The first stage was to train a base policy that received the robot's proprioceptive observations and information about the commanded movement velocity. After training, the robot learned a stable forward gait and was able to maintain balance under standard environment settings. Then, generalization tests were performed for different ground friction values and additional mass placed on the robot.
+
+The final stage was the preparation of an adaptation module inspired by the RMA approach. This module learned to estimate hidden environment parameters based on the history of robot observations and actions, so that the policy does not need to receive privileged information directly during deployment.
+
+### Teacher Mode, Friction 0.1
+
+The `teacher` mode is a test variant in which the policy receives the true values of privileged observations, meaning the actual environment parameters such as ground friction and additional payload mass. This is a reference mode because the model does not need to estimate these values from the robot's movement history.
+
+The tests were performed for a very low ground friction value of `0.1` with an additional payload of `2 kg`. Under these conditions, the robot maintained stable movement throughout the entire episode and no falls were recorded (`falls = 0`).
+
+The plot shows that the velocity along the `x` axis quickly reaches the commanded value of `0.6 m/s` and then remains above the target. At the same time, a small lateral drift appears along the `y` axis, which is an expected effect at such low friction, but it does not lead to a loss of stability.
+
+The friction and mass values in the privileged parameter plots remain consistent with the actual experiment configuration. This result shows that, with access to the true environment parameters, the policy can move correctly even on slippery ground.
 
 ![Teacher mode](images/teacher.png)
 
-### Tryb zero, tarcie 0.1
+### Zero Mode, Friction 0.1
 
-Tryb `zero` oznacza wariant testowy, w którym polityka nie otrzymuje prawdziwych wartości obserwacji uprzywilejowanych ani estymacji z modułu adaptacyjnego. Zamiast tego część obserwacji odpowiadająca parametrom środowiska jest ustawiana na wartości zerowe, dlatego tryb ten służy jako prosty punkt odniesienia pokazujący, jak polityka zachowuje się bez poprawnej informacji o tarciu i obciążeniu.
+The `zero` mode is a test variant in which the policy receives neither the true privileged observations nor estimates from the adaptation module. Instead, the observation part corresponding to environment parameters is set to zero values. Therefore, this mode serves as a simple baseline showing how the policy behaves without correct information about friction and payload.
 
-Testy przeprowadzono dla bardzo niskiej wartości tarcia podłoża równej `0.1` z dodatkowym obciążeniem `2 kg`. Mimo braku poprawnych parametrów środowiska robot utrzymał stabilny ruch przez cały epizod i nie odnotowano żadnego upadku (`falls = 0`).
+The tests were performed for a very low ground friction value of `0.1` with an additional payload of `2 kg`. Despite the lack of correct environment parameters, the robot maintained stable movement throughout the entire episode and no falls were recorded (`falls = 0`).
 
-Na wykresie widać, że prędkość w osi `x` szybko przekracza 
-wartość zadaną `0.6 m/s` i przez większość testu utrzymuje 
-się w zakresie około `0.7 m/s`. Na wykresie dryfu bocznego widać, że robot najpierw odchyla się w jedną stronę, a następnie koryguje ruch i przechodzi na przeciwną stronę osi `y`. Różni się to od trybu `teacher`, gdzie po początkowym odchyleniu robot dalej poruszał się już bardziej stabilnie w jednym kierunku. Oznacza to, że bez prawdziwych wartości obserwacji uprzywilejowanych polityka nadal utrzymuje równowagę, ale korekcja kierunku ruchu jest mniej płynna.
+The plot shows that the velocity along the `x` axis quickly exceeds the commanded value of `0.6 m/s` and remains around `0.7 m/s` for most of the test. The lateral drift plot shows that the robot first deviates to one side, then corrects its motion and moves to the opposite side of the `y` axis. This differs from the `teacher` mode, where after the initial deviation the robot continued moving more steadily in one direction. This means that without the true privileged observation values, the policy still maintains balance, but direction correction is less smooth.
 
-Wykresy parametrów pokazują jednak dużą rozbieżność między wartościami używanymi przez model a rzeczywistymi warunkami testu. Model działa tak, jakby tarcie i masa obciążenia miały wartości nominalne, podczas gdy rzeczywiste tarcie wynosi `0.1`, a masa dodatkowa `2 kg`. Wynik pokazuje, że sama polityka bazowa jest dość odporna, ale tryb `zero` nie odzwierciedla rzeczywistych parametrów środowiska.
+However, the parameter plots show a large mismatch between the values used by the model and the actual test conditions. The model behaves as if friction and payload mass had nominal values, while the actual friction is `0.1` and the additional mass is `2 kg`. This result shows that the base policy itself is quite robust, but the `zero` mode does not reflect the real environment parameters.
 
 ![Zero mode](images/zero.png)
 
-### Tryb RMA, tarcie 0.1
+### RMA Mode, Friction 0.1
 
-Tryb RMA oznacza wariant testowy, w którym polityka nie otrzymuje bezpośrednio prawdziwych wartości obserwacji uprzywilejowanych. Zamiast tego moduł adaptacyjny estymuje ukryte parametry środowiska, takie jak tarcie podłoża i masa dodatkowego obciążenia, na podstawie historii obserwacji oraz akcji robota.
+The RMA mode is a test variant in which the policy does not receive the true privileged observation values directly. Instead, the adaptation module estimates hidden environment parameters, such as ground friction and additional payload mass, based on the history of robot observations and actions.
 
-Testy przeprowadzono dla bardzo niskiej wartości tarcia podłoża równej 0.1 z dodatkowym obciążeniem 2 kg. W tych warunkach robot utrzymał stabilny ruch przez cały epizod i nie odnotowano żadnego upadku (falls = 0).
+The tests were performed for a very low ground friction value of `0.1` with an additional payload of `2 kg`. Under these conditions, the robot maintained stable movement throughout the entire episode and no falls were recorded (`falls = 0`).
 
-Na wykresie widać, że prędkość w osi x szybko przekracza wartość zadaną 0.6 m/s, a następnie utrzymuje się powyżej celu, podobnie jak w pozostałych trybach. Dryf boczny w osi y jest zauważalny: robot odchyla się w jedną stronę i tylko częściowo koryguje tor ruchu, ale nie prowadzi to do utraty stabilności.
+The plot shows that the velocity along the `x` axis quickly exceeds the commanded value of `0.6 m/s` and then remains above the target, similarly to the other modes. Lateral drift along the `y` axis is noticeable: the robot deviates to one side and only partially corrects its trajectory, but this does not lead to a loss of stability.
 
-Najważniejszą różnicą względem trybu zero są wykresy estymowanych parametrów. Moduł RMA początkowo zawyża wartość tarcia, ale po kilku sekundach estymacja zbliża się do rzeczywistego tarcia 0.1. Estymacja masy również szybko dochodzi do wartości bliskiej rzeczywistemu obciążeniu 2 kg. Oznacza to, że moduł adaptacyjny poprawnie rozpoznaje zmienione warunki środowiska i dostarcza polityce informacje zbliżone do obserwacji uprzywilejowanych z trybu teacher.
+The most important difference compared to the `zero` mode is visible in the estimated parameter plots. The RMA module initially overestimates the friction value, but after a few seconds the estimate approaches the real friction value of `0.1`. The mass estimate also quickly reaches a value close to the real payload of `2 kg`. This means that the adaptation module correctly recognizes changed environment conditions and provides the policy with information close to the privileged observations used in the `teacher` mode.
 
 ![RMA mode](images/rma.png)
 
-### Końcowy wynik
-Najważniejszy wynik eksperymentu polega na tym, że moduł RMA poprawnie zbliża estymowane tarcie do wartości 0.1 oraz estymowaną masę do 2 kg. Dzięki temu polityka może działać w sposób bardziej świadomy niż w trybie zero, bez konieczności podawania jej prawdziwych obserwacji uprzywilejowanych jak w trybie teacher.
+### Final Result
 
-Moduł RMA był testowany w zakresie różnych parametrów środowiska, obejmujących tarcie podłoża od 0.1 do 1.0 oraz dodatkowe obciążenie robota od 0 do 2 kg. W przeprowadzonych eksperymentach estymacje nie były idealne od pierwszego kroku, ale zazwyczaj w krótkim czasie stabilizowały się w pobliżu rzeczywistych wartości. Pokazuje to, że moduł adaptacyjny potrafi reagować na różne warunki środowiskowe.
+The most important result of the experiment is that the RMA module correctly brings the estimated friction close to `0.1` and the estimated mass close to `2 kg`. Thanks to this, the policy can act in a more informed way than in the `zero` mode, without requiring true privileged observations as in the `teacher` mode.
 
+The RMA module was tested over a range of different environment parameters, including ground friction from `0.1` to `1.0` and additional robot payload from `0` to `2 kg`. In the conducted experiments, the estimates were not perfect from the first step, but they usually stabilized near the real values after a short time. This shows that the adaptation module can react to different environmental conditions.
 
-## Bibliografia
+## Bibliography
 
 - RMA: Rapid Motor Adaptation for Legged Robots  
   https://arxiv.org/pdf/2107.04034
@@ -177,6 +165,7 @@ Moduł RMA był testowany w zakresie różnych parametrów środowiska, obejmuj�
 
 ---
 
-## Zespół
-- Artsiom Kruk 
+## Team
+
+- Artsiom Kruk
 - Daniil Kavalevich
